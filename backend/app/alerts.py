@@ -37,23 +37,16 @@ def detect_alerts(
     if not chunks:
         alerts.append("No retrieved chunks were available for this answer.")
 
-    recent_count = db.scalar(
+    recent_logs = db.scalars(
         select(AuditLog)
         .where(AuditLog.user_id == user_id)
         .where(AuditLog.timestamp >= timestamp - timedelta(minutes=5))
-    )
-    if recent_count is not None:
-        recent_logs = db.scalars(
-            select(AuditLog)
-            .where(AuditLog.user_id == user_id)
-            .where(AuditLog.timestamp >= timestamp - timedelta(minutes=5))
-        ).all()
-        if len(recent_logs) >= 10:
-            alerts.append("High query volume from this user in the last 5 minutes.")
+    ).all()
+    if len(recent_logs) >= 10:
+        alerts.append("High query volume from this user in the last 5 minutes.")
 
     low_scores = [chunk.get("score") for chunk in chunks if isinstance(chunk.get("score"), int | float)]
     if low_scores and max(low_scores) < 0.25:
         alerts.append("Retrieved context has low similarity scores.")
 
     return alerts
-

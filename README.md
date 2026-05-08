@@ -11,6 +11,10 @@ MVP implementation for a document-grounded chat system that records every retrie
 - Generate SHA256 verification hashes for each audit record
 - Search audit history by user, document, date, or text
 - Dashboard for sources, timestamps, hashes, and responses
+- Mask common PII before storing queries, chunks, and responses
+- Flag suspicious audit events such as sensitive terms, empty retrieval, and high query volume
+- Export audit logs as JSON or CSV
+- Verify hashes from the dashboard
 
 ## Stack
 
@@ -51,6 +55,13 @@ Open `http://localhost:5173`.
 - `GET /documents` lists uploaded documents
 - `POST /chat` asks a RAG question and writes an audit log
 - `GET /audit-logs` searches audit history
+- `GET /audit-logs/export?format=json` exports audit logs as JSON
+- `GET /audit-logs/export?format=csv` exports audit logs as CSV
 - `GET /audit-logs/{id}/verify` recomputes and verifies the SHA256 hash
 - `GET /health` returns service status
 
+## Compliance-Oriented Extensions
+
+RAGTrace now stores masked audit data by default. Email addresses, phone numbers, Aadhaar-like numbers, credit-card-like values, and IP addresses are replaced with labels before the record hash is generated. This keeps the stored trail useful without preserving obvious sensitive values.
+
+Suspicious activity alerts are included on chat responses and audit logs. The first version flags sensitive query terms, missing retrieved context, low retrieval similarity, and unusually high query volume from the same user.
