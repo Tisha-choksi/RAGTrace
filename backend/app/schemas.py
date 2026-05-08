@@ -36,6 +36,8 @@ class ChatResponse(BaseModel):
     sha256_hash: str
     retrieved_chunks: list[RetrievedChunk]
     audit_log_id: int
+    alerts: list[str] = []
+    pii_masked: bool = True
 
 
 class AuditLogOut(BaseModel):
@@ -46,6 +48,8 @@ class AuditLogOut(BaseModel):
     response: str
     model: str
     sha256_hash: str
+    alerts: list[str] = []
+    pii_masked: bool = True
     timestamp: datetime
     document_id: int | None = None
     document_name: str | None = None
@@ -56,4 +60,3 @@ class VerifyOut(BaseModel):
     stored_hash: str
     recomputed_hash: str
     verified: bool
-

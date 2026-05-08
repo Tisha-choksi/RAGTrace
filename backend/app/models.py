@@ -28,8 +28,9 @@ class AuditLog(Base):
     response: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(String(120), nullable=False)
     sha256_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    alerts: Mapped[str] = mapped_column(Text, default="[]")
+    pii_masked: Mapped[str] = mapped_column(String(10), default="true")
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
 
     document: Mapped[Document | None] = relationship(back_populates="audit_logs")
-
