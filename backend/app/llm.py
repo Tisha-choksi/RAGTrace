@@ -1,3 +1,8 @@
+try:
+    from openai import AsyncOpenAI
+except ImportError:
+    AsyncOpenAI = None  # type: ignore[assignment,misc]
+
 from app.config import settings
 
 
@@ -22,11 +27,19 @@ def build_prompt(query: str, chunks: list[dict]) -> str:
     )
 
 
+def _local_demo_answer(chunks: list[dict]) -> str:
+    if not chunks:
+        return "I could not find relevant document context for that question."
+    source_lines = [
+        f"- {chunk.get('text', '')[:500]} (source: {chunk.get('filename')}, page {chunk.get('page')})"
+        for chunk in chunks[:3]
+    ]
+    return "Local demo answer based on the most relevant retrieved chunks:\n" + "\n".join(source_lines)
+
+
 async def generate_answer(query: str, chunks: list[dict]) -> str:
     provider = settings.ai_provider.lower()
-    if provider == "openai" and settings.openai_api_key:
-        from openai import AsyncOpenAI
-
+    if provider == "openai" and settings.openai_api_key and AsyncOpenAI is not None:
         client = AsyncOpenAI(api_key=settings.openai_api_key)
         response = await client.chat.completions.create(
             model=settings.openai_model,
@@ -43,12 +56,4 @@ async def generate_answer(query: str, chunks: list[dict]) -> str:
         response = await model.generate_content_async(build_prompt(query, chunks))
         return response.text or ""
 
-    if not chunks:
-        return "I could not find relevant document context for that question."
-
-    source_lines = []
-    for chunk in chunks[:3]:
-        source_lines.append(
-            f"- {chunk.get('text', '')[:500]} (source: {chunk.get('filename')}, page {chunk.get('page')})"
-        )
-    return "Local demo answer based on the most relevant retrieved chunks:\n" + "\n".join(source_lines)
+    return _local_demo_answer(chunks)
