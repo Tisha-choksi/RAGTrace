@@ -216,19 +216,21 @@ def audit_logs(
         statement = statement.where(AuditLog.timestamp >= from_date)
     if to_date:
         statement = statement.where(AuditLog.timestamp <= to_date)
-    if text:
-        if settings.database_url.startswith("sqlite"):
-            fts_ids = db.execute(
-                text("SELECT rowid FROM audit_logs_fts WHERE audit_logs_fts MATCH :q LIMIT 10000"),
-                {"q": _fts5_escape(text)},
-            ).scalars().all()
-            statement = statement.where(AuditLog.id.in_(fts_ids))
-        else:
+    if text and settings.database_url.startswith("sqlite"):
+        fts_ids = db.execute(
+            text("SELECT rowid FROM audit_logs_fts WHERE audit_logs_fts MATCH :q LIMIT 10000"),
+            {"q": _fts5_escape(text)},
+        ).scalars().all()
+        total = len(fts_ids)
+        paged_ids = fts_ids[offset : offset + limit]
+        statement = statement.where(AuditLog.id.in_(paged_ids))
+        rows = db.scalars(statement).all()
+    else:
+        if text:
             like = f"%{text}%"
             statement = statement.where(AuditLog.query.like(like) | AuditLog.response.like(like))
-
-    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
-    rows = db.scalars(statement.limit(limit).offset(offset)).all()
+        total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+        rows = db.scalars(statement.limit(limit).offset(offset)).all()
 
     items = []
     for row in rows:
