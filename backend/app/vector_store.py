@@ -1,3 +1,4 @@
+import threading
 from typing import Any
 
 import chromadb
@@ -5,10 +6,19 @@ from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunct
 
 from app.config import settings
 
+_lock = threading.Lock()
+_instance: "VectorStore | None" = None
+
 
 class VectorStore:
     def __init__(self) -> None:
-        self.client = chromadb.PersistentClient(path=settings.chroma_dir)
+        if settings.chroma_server_host:
+            self.client = chromadb.HttpClient(
+                host=settings.chroma_server_host,
+                port=settings.chroma_server_port,
+            )
+        else:
+            self.client = chromadb.PersistentClient(path=settings.chroma_dir)
         embedding_fn = SentenceTransformerEmbeddingFunction(model_name=settings.embedding_model)
         self.collection = self.client.get_or_create_collection(
             name="rag_documents",
@@ -35,5 +45,13 @@ class VectorStore:
         return chunks
 
 
-vector_store = VectorStore()
+def get_vector_store() -> VectorStore:
+    global _instance
+    if _instance is None:
+        with _lock:
+            if _instance is None:
+                _instance = VectorStore()
+    return _instance
 
+
+vector_store = get_vector_store()

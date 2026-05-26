@@ -55,6 +55,13 @@ class AuditLogOut(BaseModel):
     document_name: str | None = None
 
 
+class PaginatedLogsResponse(BaseModel):
+    items: list[AuditLogOut]
+    total: int
+    limit: int
+    offset: int
+
+
 class VerifyOut(BaseModel):
     id: int
     stored_hash: str
