@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-1.5-flash"
+    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    max_upload_mb: int = 50
+    chroma_server_host: str = ""
+    chroma_server_port: int = 8001
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
