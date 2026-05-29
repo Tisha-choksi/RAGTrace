@@ -1,3 +1,4 @@
+import asyncio
 import json
 import csv
 import io
@@ -99,7 +100,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/documents/upload", response_model=DocumentOut)
-def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)) -> Document:
+def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db)) -> DocumentOut:
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
 
@@ -140,7 +141,7 @@ def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db))
 
 
 @app.get("/documents", response_model=list[DocumentOut])
-def list_documents(db: Session = Depends(get_db)) -> list[Document]:
+def list_documents(db: Session = Depends(get_db)) -> list[DocumentOut]:
     return list(db.scalars(select(Document).order_by(Document.uploaded_at.desc())))
 
 
@@ -151,7 +152,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)) -> ChatRespo
         if not document:
             raise HTTPException(status_code=404, detail="Document not found.")
 
-    raw_chunks = vector_store.query(request.query, document_id=request.document_id)
+    raw_chunks = await asyncio.to_thread(vector_store.query, request.query, request.document_id)
     masked_query = mask_pii(request.query)
     chunks = mask_chunks(raw_chunks)
     raw_response = await generate_answer(masked_query, chunks)

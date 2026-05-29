@@ -12,8 +12,18 @@ def save_upload(file: UploadFile) -> Path:
     suffix = Path(file.filename or "document.pdf").suffix or ".pdf"
     stored_name = f"{uuid4().hex}{suffix}"
     target = Path(settings.upload_dir) / stored_name
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    total = 0
     with target.open("wb") as out:
-        out.write(file.file.read())
+        while True:
+            chunk = file.file.read(65_536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                target.unlink(missing_ok=True)
+                raise ValueError(f"File exceeds {settings.max_upload_mb} MB limit.")
+            out.write(chunk)
     return target
 
 
