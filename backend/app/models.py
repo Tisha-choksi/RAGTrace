@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -13,7 +13,7 @@ class Document(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     stored_path: Mapped[str] = mapped_column(String(500), nullable=False)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
-    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="document")
 
@@ -24,13 +24,16 @@ class AuditLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[str] = mapped_column(String(120), default="anonymous", index=True)
     query: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     retrieved_chunks: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_retrieved_chunks: Mapped[str | None] = mapped_column(Text, nullable=True)
     response: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     model: Mapped[str] = mapped_column(String(120), nullable=False)
     sha256_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     alerts: Mapped[str] = mapped_column(Text, default="[]")
     pii_masked: Mapped[str] = mapped_column(String(10), default="true")
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
 
     document: Mapped[Document | None] = relationship(back_populates="audit_logs")
