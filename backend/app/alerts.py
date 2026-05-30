@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import AuditLog
@@ -37,15 +37,20 @@ def detect_alerts(
     if not chunks:
         alerts.append("No retrieved chunks were available for this answer.")
 
-    recent_logs = db.scalars(
-        select(AuditLog)
+    recent_count = db.scalar(
+        select(func.count())
         .where(AuditLog.user_id == user_id)
         .where(AuditLog.timestamp >= timestamp - timedelta(minutes=5))
-    ).all()
-    if len(recent_logs) >= 10:
+    ) or 0
+    # +1 accounts for the current query, which is not yet committed
+    if recent_count + 1 >= 10:
         alerts.append("High query volume from this user in the last 5 minutes.")
 
-    low_scores = [chunk.get("score") for chunk in chunks if isinstance(chunk.get("score"), int | float)]
+    low_scores = [
+        chunk.get("score")
+        for chunk in chunks
+        if isinstance(chunk.get("score"), (int, float)) and not isinstance(chunk.get("score"), bool)
+    ]
     if low_scores and max(low_scores) < 0.25:
         alerts.append("Retrieved context has low similarity scores.")
 

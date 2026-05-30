@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         Path(self.upload_dir).mkdir(parents=True, exist_ok=True)
         Path(self.chroma_dir).mkdir(parents=True, exist_ok=True)
-        Path("data").mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()
