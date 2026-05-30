@@ -95,10 +95,10 @@ export function ChatSection({
                   PII masked
                 </span>
               )}
-              {chatResult.alerts.map((alert) => (
+              {chatResult.alerts.map((alert, i) => (
                 <span
                   className="inline-flex items-center gap-1 rounded-md border border-[#e0b15f] bg-[#fff7e6] px-2 py-1 text-xs text-[#6f4b00]"
-                  key={alert}
+                  key={i}
                 >
                   <AlertTriangle size={13} />
                   {alert}
