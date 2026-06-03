@@ -38,6 +38,7 @@ class ChatResponse(BaseModel):
     audit_log_id: int
     alerts: list[str] = []
     pii_masked: bool = True
+    groundedness_score: float | None = None
 
 
 class AuditLogOut(BaseModel):
@@ -50,6 +51,7 @@ class AuditLogOut(BaseModel):
     sha256_hash: str
     alerts: list[str] = []
     pii_masked: bool = True
+    groundedness_score: float | None = None
     timestamp: datetime
     document_id: int | None = None
     document_name: str | None = None

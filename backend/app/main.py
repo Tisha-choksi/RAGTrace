@@ -16,12 +16,13 @@ from app.alerts import detect_alerts
 from app.audit import generate_audit_hash
 from app.config import settings
 from app.database import Base, engine, get_db
-from app.llm import active_model_name, generate_answer
-from app.models import AuditLog, Document
+from app.groundedness import score_groundedness
+from app.llm import active_model_name, generate_answer, generate_answer_stream
+from app.models import AuditLog, Document, DocumentChunk
 from app.pii import mask_chunks, mask_pii
 from app.pdf_loader import chunk_text, extract_pdf_pages, save_upload
 from app.schemas import AuditLogOut, ChatRequest, ChatResponse, DocumentOut, PaginatedLogsResponse, VerifyOut
-from app.vector_store import vector_store
+from app.vector_store import hybrid_query, vector_store
 
 settings.ensure_dirs()
 Base.metadata.create_all(bind=engine)
@@ -37,8 +38,12 @@ def migrate_sqlite() -> None:
     inspector = inspect(engine)
     if "audit_logs" not in inspector.get_table_names():
         return
+
     columns = {col["name"] for col in inspector.get_columns("audit_logs")}
+    tables = set(inspector.get_table_names())
+
     with engine.begin() as conn:
+        # ── audit_logs column migrations ──────────────────────────────────────
         if "alerts" not in columns:
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN alerts TEXT DEFAULT '[]'"))
         if "pii_masked" not in columns:
@@ -49,8 +54,10 @@ def migrate_sqlite() -> None:
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN raw_response TEXT"))
         if "raw_retrieved_chunks" not in columns:
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN raw_retrieved_chunks TEXT"))
+        if "groundedness_score" not in columns:
+            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN groundedness_score REAL"))
 
-        tables = set(inspector.get_table_names())
+        # ── audit_logs FTS5 ───────────────────────────────────────────────────
         if "audit_logs_fts" not in tables:
             conn.execute(text(
                 "CREATE VIRTUAL TABLE audit_logs_fts USING fts5("
@@ -79,6 +86,38 @@ def migrate_sqlite() -> None:
                 "AFTER DELETE ON audit_logs BEGIN "
                 "INSERT INTO audit_logs_fts(audit_logs_fts, rowid, query, response) "
                 "VALUES ('delete', old.id, old.query, old.response); END"
+            ))
+
+        # ── document_chunks FTS5 ──────────────────────────────────────────────
+        if "document_chunks_fts" not in tables and "document_chunks" in tables:
+            conn.execute(text(
+                "CREATE VIRTUAL TABLE document_chunks_fts USING fts5("
+                "chunk_text, document_id UNINDEXED, "
+                "content='document_chunks', content_rowid='id')"
+            ))
+            conn.execute(text(
+                "INSERT INTO document_chunks_fts(rowid, chunk_text, document_id) "
+                "SELECT id, chunk_text, document_id FROM document_chunks"
+            ))
+            conn.execute(text(
+                "CREATE TRIGGER IF NOT EXISTS doc_chunks_ai "
+                "AFTER INSERT ON document_chunks BEGIN "
+                "INSERT INTO document_chunks_fts(rowid, chunk_text, document_id) "
+                "VALUES (new.id, new.chunk_text, new.document_id); END"
+            ))
+            conn.execute(text(
+                "CREATE TRIGGER IF NOT EXISTS doc_chunks_au "
+                "AFTER UPDATE ON document_chunks BEGIN "
+                "INSERT INTO document_chunks_fts(document_chunks_fts, rowid, chunk_text, document_id) "
+                "VALUES ('delete', old.id, old.chunk_text, old.document_id); "
+                "INSERT INTO document_chunks_fts(rowid, chunk_text, document_id) "
+                "VALUES (new.id, new.chunk_text, new.document_id); END"
+            ))
+            conn.execute(text(
+                "CREATE TRIGGER IF NOT EXISTS doc_chunks_ad "
+                "AFTER DELETE ON document_chunks BEGIN "
+                "INSERT INTO document_chunks_fts(document_chunks_fts, rowid, chunk_text, document_id) "
+                "VALUES ('delete', old.id, old.chunk_text, old.document_id); END"
             ))
 
 
@@ -131,6 +170,12 @@ def upload_document(file: UploadFile = File(...), db: Session = Depends(get_db))
                 }
             )
             ids.append(f"doc-{document.id}-chunk-{chunk_index}")
+            db.add(DocumentChunk(
+                document_id=document.id,
+                chunk_index=chunk_index,
+                page=page_number,
+                chunk_text=chunk,
+            ))
             chunk_index += 1
 
     vector_store.add_chunks(texts, metadatas, ids)
@@ -152,14 +197,15 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)) -> ChatRespo
         if not document:
             raise HTTPException(status_code=404, detail="Document not found.")
 
-    raw_chunks = await asyncio.to_thread(vector_store.query, request.query, request.document_id)
+    raw_chunks = hybrid_query(request.query, db, request.document_id)
     masked_query = mask_pii(request.query)
     chunks = mask_chunks(raw_chunks)
     raw_response = await generate_answer(masked_query, chunks)
     response = mask_pii(raw_response)
+    groundedness = score_groundedness(response, chunks)
     model = active_model_name()
     timestamp = datetime.now(timezone.utc)
-    alerts = detect_alerts(db, request.user_id or "anonymous", masked_query, chunks, timestamp)
+    alerts = detect_alerts(db, request.user_id or "anonymous", masked_query, chunks, timestamp, groundedness)
     sha_hash = generate_audit_hash(masked_query, response, chunks)
 
     raw_chunks_json = json.dumps(raw_chunks, ensure_ascii=False)
@@ -177,6 +223,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)) -> ChatRespo
         sha256_hash=sha_hash,
         alerts=json.dumps(alerts, ensure_ascii=False),
         pii_masked="true",
+        groundedness_score=groundedness,
         timestamp=timestamp,
         document_id=request.document_id,
     )
@@ -194,6 +241,79 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)) -> ChatRespo
         audit_log_id=log.id,
         alerts=alerts,
         pii_masked=True,
+        groundedness_score=groundedness,
+    )
+
+
+async def _stream_chat_events(request: ChatRequest, db: Session):
+    """Async generator yielding SSE-formatted events for a streaming chat request."""
+    if request.document_id:
+        document = db.get(Document, request.document_id)
+        if not document:
+            yield f"data: {json.dumps({'type': 'error', 'detail': 'Document not found.'})}\n\n"
+            return
+
+    raw_chunks = hybrid_query(request.query, db, request.document_id)
+    masked_query = mask_pii(request.query)
+    chunks = mask_chunks(raw_chunks)
+
+    full_response = ""
+    async for token in generate_answer_stream(masked_query, chunks):
+        full_response += token
+        yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+    response = mask_pii(full_response)
+    groundedness = score_groundedness(response, chunks)
+    model_name = active_model_name()
+    timestamp = datetime.now(timezone.utc)
+    alerts = detect_alerts(db, request.user_id or "anonymous", masked_query, chunks, timestamp, groundedness)
+    sha_hash = generate_audit_hash(masked_query, response, chunks)
+
+    raw_chunks_json = json.dumps(raw_chunks, ensure_ascii=False)
+    masked_chunks_json = json.dumps(chunks, ensure_ascii=False)
+
+    log = AuditLog(
+        user_id=request.user_id or "anonymous",
+        query=masked_query,
+        raw_query=request.query if request.query != masked_query else None,
+        retrieved_chunks=masked_chunks_json,
+        raw_retrieved_chunks=raw_chunks_json if raw_chunks_json != masked_chunks_json else None,
+        response=response,
+        raw_response=full_response if full_response != response else None,
+        model=model_name,
+        sha256_hash=sha_hash,
+        alerts=json.dumps(alerts, ensure_ascii=False),
+        pii_masked="true",
+        groundedness_score=groundedness,
+        timestamp=timestamp,
+        document_id=request.document_id,
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+
+    done_payload = {
+        "type": "done",
+        "query": masked_query,
+        "response": response,
+        "model": model_name,
+        "timestamp": timestamp.isoformat(),
+        "sha256_hash": sha_hash,
+        "retrieved_chunks": chunks,
+        "audit_log_id": log.id,
+        "alerts": alerts,
+        "pii_masked": True,
+        "groundedness_score": groundedness,
+    }
+    yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
+    return StreamingResponse(
+        _stream_chat_events(request, db),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -246,6 +366,7 @@ def audit_logs(
                 sha256_hash=row.sha256_hash,
                 alerts=json.loads(row.alerts or "[]"),
                 pii_masked=(row.pii_masked or "true") == "true",
+                groundedness_score=row.groundedness_score,
                 timestamp=row.timestamp,
                 document_id=row.document_id,
                 document_name=row.document.filename if row.document else None,
@@ -270,6 +391,7 @@ def export_audit_logs(
             "sha256_hash": row.sha256_hash,
             "alerts": json.loads(row.alerts or "[]"),
             "pii_masked": (row.pii_masked or "true") == "true",
+            "groundedness_score": row.groundedness_score,
             "timestamp": row.timestamp.isoformat(),
             "document_id": row.document_id,
             "document_name": row.document.filename if row.document else None,
@@ -289,7 +411,7 @@ def export_audit_logs(
         output,
         fieldnames=[
             "id", "user_id", "query", "response", "model", "sha256_hash",
-            "alerts", "pii_masked", "timestamp", "document_id", "document_name",
+            "alerts", "pii_masked", "groundedness_score", "timestamp", "document_id", "document_name",
         ],
     )
     writer.writeheader()
