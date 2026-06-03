@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     max_upload_mb: int = 50
     chroma_server_host: str = ""
     chroma_server_port: int = 8001
+    enable_reranker: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

@@ -26,6 +26,7 @@ def detect_alerts(
     query: str,
     chunks: list[dict],
     timestamp: datetime,
+    groundedness_score: float | None = None,
 ) -> list[str]:
     alerts: list[str] = []
     query_lower = query.lower()
@@ -53,5 +54,10 @@ def detect_alerts(
     ]
     if low_scores and max(low_scores) < 0.25:
         alerts.append("Retrieved context has low similarity scores.")
+
+    if groundedness_score is not None and groundedness_score < 0.35:
+        alerts.append(
+            f"Low groundedness ({groundedness_score:.2f}): response may not be supported by retrieved context."
+        )
 
     return alerts
