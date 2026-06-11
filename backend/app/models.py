@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -16,6 +16,19 @@ class Document(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="document")
+    chunks: Mapped[list["DocumentChunk"]] = relationship(back_populates="document")
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True, nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    page: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    document: Mapped["Document"] = relationship(back_populates="chunks")
 
 
 class AuditLog(Base):
@@ -33,6 +46,7 @@ class AuditLog(Base):
     sha256_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     alerts: Mapped[str] = mapped_column(Text, default="[]")
     pii_masked: Mapped[str] = mapped_column(String(10), default="true")
+    groundedness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
 

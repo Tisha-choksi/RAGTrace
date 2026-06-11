@@ -1,3 +1,6 @@
+import asyncio
+from typing import AsyncGenerator
+
 try:
     from openai import AsyncOpenAI
 except ImportError:
@@ -57,3 +60,37 @@ async def generate_answer(query: str, chunks: list[dict]) -> str:
         return response.text or ""
 
     return _local_demo_answer(chunks)
+
+
+async def generate_answer_stream(query: str, chunks: list[dict]) -> AsyncGenerator[str, None]:
+    provider = settings.ai_provider.lower()
+
+    if provider == "openai" and settings.openai_api_key and AsyncOpenAI is not None:
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        stream = await client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[{"role": "user", "content": build_prompt(query, chunks)}],
+            temperature=0.2,
+            stream=True,
+        )
+        async for chunk in stream:
+            token = chunk.choices[0].delta.content or ""
+            if token:
+                yield token
+        return
+
+    if provider == "gemini" and settings.gemini_api_key:
+        import google.generativeai as genai
+
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel(settings.gemini_model)
+        async for chunk in model.generate_content_async(build_prompt(query, chunks), stream=True):
+            token = chunk.text or ""
+            if token:
+                yield token
+        return
+
+    # Local demo: simulate streaming word-by-word
+    for word in _local_demo_answer(chunks).split(" "):
+        yield word + " "
+        await asyncio.sleep(0.04)

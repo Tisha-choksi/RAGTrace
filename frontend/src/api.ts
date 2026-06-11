@@ -41,12 +41,11 @@ export async function uploadPdf(file: File): Promise<DocumentItem> {
   return res.json();
 }
 
-export async function sendQuestion(params: {
-  query: string;
-  userId: string;
-  documentId: string | null;
-}): Promise<ChatResult> {
-  const res = await fetch(`${API_URL}/chat`, {
+export async function streamQuestion(
+  params: { query: string; userId: string; documentId: string | null },
+  onToken: (token: string) => void,
+): Promise<ChatResult> {
+  const res = await fetch(`${API_URL}/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -55,9 +54,45 @@ export async function sendQuestion(params: {
       document_id: params.documentId ? Number(params.documentId) : null,
     }),
   });
-  const payload = await res.json();
-  if (!res.ok) throw new Error(payload.detail ?? "Chat request failed");
-  return payload;
+
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error((payload as { detail?: string }).detail ?? "Chat request failed");
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      try {
+        const data = JSON.parse(line.slice(6)) as {
+          type: string;
+          content?: string;
+          detail?: string;
+          [key: string]: unknown;
+        };
+        if (data.type === "token") {
+          onToken(data.content as string);
+        } else if (data.type === "done") {
+          return data as unknown as ChatResult;
+        } else if (data.type === "error") {
+          throw new Error(data.detail ?? "Stream error");
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) continue;
+        throw e;
+      }
+    }
+  }
+  throw new Error("Stream ended without a completion event");
 }
 
 export async function verifyLog(id: number): Promise<VerifyResult> {
