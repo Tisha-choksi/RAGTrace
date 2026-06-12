@@ -24,6 +24,7 @@ export type ChatResult = {
   audit_log_id: number;
   alerts: string[];
   pii_masked: boolean;
+  groundedness_score?: number | null;
 };
 
 export type AuditLog = {
@@ -36,6 +37,7 @@ export type AuditLog = {
   sha256_hash: string;
   alerts: string[];
   pii_masked: boolean;
+  groundedness_score?: number | null;
   timestamp: string;
   document_id?: number;
   document_name?: string;
