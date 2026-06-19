@@ -32,18 +32,14 @@ def _fts5_escape(term: str) -> str:
     return '"' + term.replace('"', "") + '"'
 
 
-def migrate_sqlite() -> None:
-    if not settings.database_url.startswith("sqlite"):
-        return
+def migrate_database() -> None:
     inspector = inspect(engine)
     if "audit_logs" not in inspector.get_table_names():
         return
 
     columns = {col["name"] for col in inspector.get_columns("audit_logs")}
-    tables = set(inspector.get_table_names())
 
     with engine.begin() as conn:
-        # ── audit_logs column migrations ──────────────────────────────────────
         if "alerts" not in columns:
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN alerts TEXT DEFAULT '[]'"))
         if "pii_masked" not in columns:
@@ -57,71 +53,8 @@ def migrate_sqlite() -> None:
         if "groundedness_score" not in columns:
             conn.execute(text("ALTER TABLE audit_logs ADD COLUMN groundedness_score REAL"))
 
-        # ── audit_logs FTS5 ───────────────────────────────────────────────────
-        if "audit_logs_fts" not in tables:
-            conn.execute(text(
-                "CREATE VIRTUAL TABLE audit_logs_fts USING fts5("
-                "query, response, content='audit_logs', content_rowid='id')"
-            ))
-            conn.execute(text(
-                "INSERT INTO audit_logs_fts(rowid, query, response) "
-                "SELECT id, query, response FROM audit_logs"
-            ))
-            conn.execute(text(
-                "CREATE TRIGGER IF NOT EXISTS audit_logs_ai "
-                "AFTER INSERT ON audit_logs BEGIN "
-                "INSERT INTO audit_logs_fts(rowid, query, response) "
-                "VALUES (new.id, new.query, new.response); END"
-            ))
-            conn.execute(text(
-                "CREATE TRIGGER IF NOT EXISTS audit_logs_au "
-                "AFTER UPDATE ON audit_logs BEGIN "
-                "INSERT INTO audit_logs_fts(audit_logs_fts, rowid, query, response) "
-                "VALUES ('delete', old.id, old.query, old.response); "
-                "INSERT INTO audit_logs_fts(rowid, query, response) "
-                "VALUES (new.id, new.query, new.response); END"
-            ))
-            conn.execute(text(
-                "CREATE TRIGGER IF NOT EXISTS audit_logs_ad "
-                "AFTER DELETE ON audit_logs BEGIN "
-                "INSERT INTO audit_logs_fts(audit_logs_fts, rowid, query, response) "
-                "VALUES ('delete', old.id, old.query, old.response); END"
-            ))
 
-        # ── document_chunks FTS5 ──────────────────────────────────────────────
-        if "document_chunks_fts" not in tables and "document_chunks" in tables:
-            conn.execute(text(
-                "CREATE VIRTUAL TABLE document_chunks_fts USING fts5("
-                "chunk_text, document_id UNINDEXED, "
-                "content='document_chunks', content_rowid='id')"
-            ))
-            conn.execute(text(
-                "INSERT INTO document_chunks_fts(rowid, chunk_text, document_id) "
-                "SELECT id, chunk_text, document_id FROM document_chunks"
-            ))
-            conn.execute(text(
-                "CREATE TRIGGER IF NOT EXISTS doc_chunks_ai "
-                "AFTER INSERT ON document_chunks BEGIN "
-                "INSERT INTO document_chunks_fts(rowid, chunk_text, document_id) "
-                "VALUES (new.id, new.chunk_text, new.document_id); END"
-            ))
-            conn.execute(text(
-                "CREATE TRIGGER IF NOT EXISTS doc_chunks_au "
-                "AFTER UPDATE ON document_chunks BEGIN "
-                "INSERT INTO document_chunks_fts(document_chunks_fts, rowid, chunk_text, document_id) "
-                "VALUES ('delete', old.id, old.chunk_text, old.document_id); "
-                "INSERT INTO document_chunks_fts(rowid, chunk_text, document_id) "
-                "VALUES (new.id, new.chunk_text, new.document_id); END"
-            ))
-            conn.execute(text(
-                "CREATE TRIGGER IF NOT EXISTS doc_chunks_ad "
-                "AFTER DELETE ON document_chunks BEGIN "
-                "INSERT INTO document_chunks_fts(document_chunks_fts, rowid, chunk_text, document_id) "
-                "VALUES ('delete', old.id, old.chunk_text, old.document_id); END"
-            ))
-
-
-migrate_sqlite()
+migrate_database()
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
@@ -337,19 +270,22 @@ def audit_logs(
         statement = statement.where(AuditLog.timestamp >= from_date)
     if to_date:
         statement = statement.where(AuditLog.timestamp <= to_date)
-    if text and settings.database_url.startswith("sqlite"):
-        fts_ids = db.execute(
-            text("SELECT rowid FROM audit_logs_fts WHERE audit_logs_fts MATCH :q LIMIT 10000"),
-            {"q": _fts5_escape(text)},
-        ).scalars().all()
-        total = len(fts_ids)
-        paged_ids = fts_ids[offset : offset + limit]
-        statement = statement.where(AuditLog.id.in_(paged_ids))
-        rows = db.scalars(statement).all()
-    else:
-        if text:
+    if text:
+        if settings.database_url.startswith("sqlite"):
+            fts_ids = db.execute(
+                text("SELECT rowid FROM audit_logs_fts WHERE audit_logs_fts MATCH :q LIMIT 10000"),
+                {"q": _fts5_escape(text)},
+            ).scalars().all()
+            total = len(fts_ids)
+            paged_ids = fts_ids[offset : offset + limit]
+            statement = statement.where(AuditLog.id.in_(paged_ids))
+            rows = db.scalars(statement).all()
+        else:
             like = f"%{text}%"
-            statement = statement.where(AuditLog.query.like(like) | AuditLog.response.like(like))
+            statement = statement.where(AuditLog.query.ilike(like) | AuditLog.response.ilike(like))
+            total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+            rows = db.scalars(statement.limit(limit).offset(offset)).all()
+    else:
         total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
         rows = db.scalars(statement.limit(limit).offset(offset)).all()
 
