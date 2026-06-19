@@ -26,6 +26,20 @@ export function AuditLogCard({ log, verifyResult, onVerify }: Props) {
         {log.pii_masked && (
           <span className="rounded-md border border-[#cfd7c6] px-2 py-1 text-xs">PII masked</span>
         )}
+        {log.groundedness_score != null && (() => {
+          const pct = Math.round(log.groundedness_score! * 100);
+          const cls =
+            log.groundedness_score! >= 0.7
+              ? "border-green-300 bg-green-50 text-green-800"
+              : log.groundedness_score! >= 0.4
+                ? "border-yellow-300 bg-yellow-50 text-yellow-800"
+                : "border-red-300 bg-red-50 text-red-800";
+          return (
+            <span className={`rounded-md border px-2 py-1 text-xs ${cls}`}>
+              Grounded {pct}%
+            </span>
+          );
+        })()}
         {log.alerts.map((alert) => (
           <span
             className="inline-flex items-center gap-1 rounded-md border border-[#e0b15f] bg-[#fff7e6] px-2 py-1 text-xs text-[#6f4b00]"
