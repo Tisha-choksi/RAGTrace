@@ -109,30 +109,43 @@ def hybrid_query(
     # ── 1. Vector search ──────────────────────────────────────────────────────
     vector_results = vector_store.query(query, document_id, n_results=candidate_count)
 
-    # ── 2. FTS5 keyword search ────────────────────────────────────────────────
+    # ── 2. Keyword search (FTS5 for SQLite, ILIKE for PostgreSQL) ─────────────
     fts_q = _fts5_query(query)
     fts_results: list[dict[str, Any]] = []
     try:
-        if document_id:
-            rows = db.execute(
-                sa_text(
-                    "SELECT dc.id FROM document_chunks dc "
-                    "JOIN document_chunks_fts fts ON fts.rowid = dc.id "
-                    "WHERE document_chunks_fts MATCH :q AND dc.document_id = :did "
-                    "ORDER BY fts.rank LIMIT :lim"
-                ),
-                {"q": fts_q, "did": document_id, "lim": candidate_count},
-            ).fetchall()
+        from sqlalchemy import text as sa_text
+        is_sqlite = str(db.bind.url).startswith("sqlite")
+
+        if is_sqlite:
+            if document_id:
+                rows = db.execute(
+                    sa_text(
+                        "SELECT dc.id FROM document_chunks dc "
+                        "JOIN document_chunks_fts fts ON fts.rowid = dc.id "
+                        "WHERE document_chunks_fts MATCH :q AND dc.document_id = :did "
+                        "ORDER BY fts.rank LIMIT :lim"
+                    ),
+                    {"q": fts_q, "did": document_id, "lim": candidate_count},
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    sa_text(
+                        "SELECT rowid FROM document_chunks_fts "
+                        "WHERE document_chunks_fts MATCH :q "
+                        "ORDER BY rank LIMIT :lim"
+                    ),
+                    {"q": fts_q, "lim": candidate_count},
+                ).fetchall()
+            fts_ids = [r[0] for r in rows]
         else:
-            rows = db.execute(
-                sa_text(
-                    "SELECT rowid FROM document_chunks_fts "
-                    "WHERE document_chunks_fts MATCH :q "
-                    "ORDER BY rank LIMIT :lim"
-                ),
-                {"q": fts_q, "lim": candidate_count},
-            ).fetchall()
-        fts_ids = [r[0] for r in rows]
+            stmt = select(DocumentChunk)
+            if document_id:
+                stmt = stmt.where(DocumentChunk.document_id == document_id)
+            like = f"%{query}%"
+            stmt = stmt.where(DocumentChunk.chunk_text.ilike(like)).limit(candidate_count)
+            objs = db.scalars(stmt).all()
+            fts_ids = [o.id for o in objs]
+
         if fts_ids:
             id_to_rank = {rid: rank for rank, rid in enumerate(fts_ids)}
             objs = db.scalars(
