@@ -39,20 +39,88 @@ def migrate_database() -> None:
         return
 
     columns = {col["name"] for col in inspector.get_columns("audit_logs")}
+    tables = set(inspector.get_table_names())
 
     with engine.begin() as conn:
+        # ── audit_logs column migrations ──────────────────────────────────────
         if "alerts" not in columns:
-            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN alerts TEXT DEFAULT '[]'"))
+            conn.execute(sa_text("ALTER TABLE audit_logs ADD COLUMN alerts TEXT DEFAULT '[]'"))
         if "pii_masked" not in columns:
-            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN pii_masked VARCHAR(10) DEFAULT 'true'"))
+            conn.execute(sa_text("ALTER TABLE audit_logs ADD COLUMN pii_masked VARCHAR(10) DEFAULT 'true'"))
         if "raw_query" not in columns:
-            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN raw_query TEXT"))
+            conn.execute(sa_text("ALTER TABLE audit_logs ADD COLUMN raw_query TEXT"))
         if "raw_response" not in columns:
-            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN raw_response TEXT"))
+            conn.execute(sa_text("ALTER TABLE audit_logs ADD COLUMN raw_response TEXT"))
         if "raw_retrieved_chunks" not in columns:
-            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN raw_retrieved_chunks TEXT"))
+            conn.execute(sa_text("ALTER TABLE audit_logs ADD COLUMN raw_retrieved_chunks TEXT"))
         if "groundedness_score" not in columns:
-            conn.execute(text("ALTER TABLE audit_logs ADD COLUMN groundedness_score REAL"))
+            conn.execute(sa_text("ALTER TABLE audit_logs ADD COLUMN groundedness_score REAL"))
+
+        if not settings.database_url.startswith("sqlite"):
+            return
+
+        # ── audit_logs FTS5 ───────────────────────────────────────────────────
+        if "audit_logs_fts" not in tables:
+            conn.execute(sa_text(
+                "CREATE VIRTUAL TABLE audit_logs_fts USING fts5("
+                "query, response, content='audit_logs', content_rowid='id')"
+            ))
+            conn.execute(sa_text(
+                "INSERT INTO audit_logs_fts(rowid, query, response) "
+                "SELECT id, query, response FROM audit_logs"
+            ))
+            conn.execute(sa_text(
+                "CREATE TRIGGER IF NOT EXISTS audit_logs_ai "
+                "AFTER INSERT ON audit_logs BEGIN "
+                "INSERT INTO audit_logs_fts(rowid, query, response) "
+                "VALUES (new.id, new.query, new.response); END"
+            ))
+            conn.execute(sa_text(
+                "CREATE TRIGGER IF NOT EXISTS audit_logs_au "
+                "AFTER UPDATE ON audit_logs BEGIN "
+                "INSERT INTO audit_logs_fts(audit_logs_fts, rowid, query, response) "
+                "VALUES ('delete', old.id, old.query, old.response); "
+                "INSERT INTO audit_logs_fts(rowid, query, response) "
+                "VALUES (new.id, new.query, new.response); END"
+            ))
+            conn.execute(sa_text(
+                "CREATE TRIGGER IF NOT EXISTS audit_logs_ad "
+                "AFTER DELETE ON audit_logs BEGIN "
+                "INSERT INTO audit_logs_fts(audit_logs_fts, rowid, query, response) "
+                "VALUES ('delete', old.id, old.query, old.response); END"
+            ))
+
+        # ── document_chunks FTS5 ──────────────────────────────────────────────
+        if "document_chunks_fts" not in tables and "document_chunks" in tables:
+            conn.execute(sa_text(
+                "CREATE VIRTUAL TABLE document_chunks_fts USING fts5("
+                "chunk_text, document_id UNINDEXED, "
+                "content='document_chunks', content_rowid='id')"
+            ))
+            conn.execute(sa_text(
+                "INSERT INTO document_chunks_fts(rowid, chunk_text, document_id) "
+                "SELECT id, chunk_text, document_id FROM document_chunks"
+            ))
+            conn.execute(sa_text(
+                "CREATE TRIGGER IF NOT EXISTS doc_chunks_ai "
+                "AFTER INSERT ON document_chunks BEGIN "
+                "INSERT INTO document_chunks_fts(rowid, chunk_text, document_id) "
+                "VALUES (new.id, new.chunk_text, new.document_id); END"
+            ))
+            conn.execute(sa_text(
+                "CREATE TRIGGER IF NOT EXISTS doc_chunks_au "
+                "AFTER UPDATE ON document_chunks BEGIN "
+                "INSERT INTO document_chunks_fts(document_chunks_fts, rowid, chunk_text, document_id) "
+                "VALUES ('delete', old.id, old.chunk_text, old.document_id); "
+                "INSERT INTO document_chunks_fts(rowid, chunk_text, document_id) "
+                "VALUES (new.id, new.chunk_text, new.document_id); END"
+            ))
+            conn.execute(sa_text(
+                "CREATE TRIGGER IF NOT EXISTS doc_chunks_ad "
+                "AFTER DELETE ON document_chunks BEGIN "
+                "INSERT INTO document_chunks_fts(document_chunks_fts, rowid, chunk_text, document_id) "
+                "VALUES ('delete', old.id, old.chunk_text, old.document_id); END"
+            ))
 
 
 migrate_database()
@@ -274,7 +342,7 @@ def audit_logs(
     if text:
         if settings.database_url.startswith("sqlite"):
             fts_ids = db.execute(
-                text("SELECT rowid FROM audit_logs_fts WHERE audit_logs_fts MATCH :q LIMIT 10000"),
+                sa_text("SELECT rowid FROM audit_logs_fts WHERE audit_logs_fts MATCH :q LIMIT 10000"),
                 {"q": _fts5_escape(text)},
             ).scalars().all()
             total = len(fts_ids)
