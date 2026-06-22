@@ -8,7 +8,8 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import func, inspect, text
+from sqlalchemy import func, inspect
+from sqlalchemy import text as sa_text
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
